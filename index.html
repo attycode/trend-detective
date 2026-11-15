@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trend Detective – Earth System Trends from NASA POWER</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{--bg:#0b1020;--card:#151b33;--ink:#e8ecf8;--mute:#9aa6c9;--acc:#4dd0e1;--warm:#ff8a65;--cool:#64b5f6}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:28px 20px 8px;max-width:960px;margin:auto}
+  h1{margin:0;font-size:1.8rem}
+  h1 span{color:var(--acc)}
+  .tag{color:var(--mute);margin:6px 0 0}
+  main{max-width:960px;margin:auto;padding:12px 20px 40px}
+  .card{background:var(--card);border-radius:14px;padding:18px;margin-top:16px}
+  .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;align-items:end}
+  label{font-size:.8rem;color:var(--mute);display:block;margin-bottom:4px}
+  select,input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #2c3562;background:#0f1530;color:var(--ink);font-size:1rem}
+  button{background:var(--acc);color:#04222a;font-weight:700;border:none;cursor:pointer}
+  button:disabled{opacity:.6}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  .stat{background:#0f1530;border-radius:10px;padding:12px}
+  .stat b{display:block;font-size:1.4rem}
+  .stat small{color:var(--mute)}
+  .verdict{font-size:1.1rem}
+  .warm{color:var(--warm)} .cool{color:var(--cool)}
+  canvas{max-height:360px}
+  #status{color:var(--mute);margin-top:10px;min-height:1.4em}
+  ul{padding-left:20px;margin:8px 0 0}
+  footer{color:var(--mute);font-size:.8rem;max-width:960px;margin:auto;padding:0 20px 40px}
+  a{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔎 Earth System <span>Trend Detective</span></h1>
+  <p class="tag">Pick any place on Earth. Pick a clue. Let 35+ years of NASA satellite and model data tell you what is changing.</p>
+</header>
+<main>
+  <div class="card">
+    <div class="controls">
+      <div>
+        <label for="place">Place</label>
+        <select id="place">
+          <option value="-24.65,25.91">Gaborone, Botswana</option>
+          <option value="-21.17,27.51">Francistown, Botswana</option>
+          <option value="-21.45,27.45">Tonota, Botswana</option>
+          <option value="37.57,126.98">Seoul, South Korea</option>
+          <option value="-1.29,36.82">Nairobi, Kenya</option>
+          <option value="6.52,3.38">Lagos, Nigeria</option>
+          <option value="-33.92,18.42">Cape Town, South Africa</option>
+          <option value="custom">Custom coordinates…</option>
+        </select>
+      </div>
+      <div id="customBox" style="display:none">
+        <label for="coords">Latitude, Longitude</label>
+        <input id="coords" placeholder="-21.17, 27.51">
+      </div>
+      <div>
+        <label for="param">Clue (Earth system variable)</label>
+        <select id="param">
+          <option value="T2M|°C|Air temperature (2 m)">🌡️ Air temperature</option>
+          <option value="PRECTOTCORR|mm/day|Rainfall">🌧️ Rainfall</option>
+          <option value="ALLSKY_SFC_SW_DWN|kWh/m²/day|Sunlight at the surface">☀️ Sunlight (solar energy)</option>
+          <option value="RH2M|%|Relative humidity">💧 Humidity</option>
+          <option value="WS2M|m/s|Wind speed (2 m)">🌬️ Wind speed</option>
+        </select>
+      </div>
+      <div>
+        <button id="go">Investigate</button>
+      </div>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="results" style="display:none">
+    <div class="card">
+      <div class="verdict" id="verdict"></div>
+    </div>
+    <div class="card">
+      <canvas id="chart"></canvas>
+    </div>
+    <div class="card stats" id="stats"></div>
+    <div class="card">
+      <b>🧩 Detective clues</b>
+      <ul id="clues"></ul>
+    </div>
+    <div class="card">
+      <b>🗓️ Which months changed most?</b>
+      <canvas id="seasonChart"></canvas>
+      <p class="tag" id="seasonNote"></p>
+    </div>
+  </div>
+</main>
+<footer>
+  Data: NASA POWER (Prediction Of Worldwide Energy Resources), derived from NASA satellite observations and the MERRA-2 / CERES / GEOS reanalysis systems,
+  accessed via <a href="https://power.larc.nasa.gov/docs/services/api/" target="_blank" rel="noopener">power.larc.nasa.gov</a>.
+  Trends are simple linear regressions on annual means and are indicators, not formal climate attribution.
+  Built with AI assistance (Claude by Anthropic) for code; the idea and design direction are the team's own.
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+let chart, seasonChart;
+
+$('place').addEventListener('change', () => {
+  $('customBox').style.display = $('place').value === 'custom' ? 'block' : 'none';
+});
+$('go').addEventListener('click', investigate);
+
+function linreg(xs, ys){
+  const n = xs.length, mx = xs.reduce((a,b)=>a+b)/n, my = ys.reduce((a,b)=>a+b)/n;
+  let sxy=0, sxx=0, syy=0;
+  for(let i=0;i<n;i++){ sxy+=(xs[i]-mx)*(ys[i]-my); sxx+=(xs[i]-mx)**2; syy+=(ys[i]-my)**2; }
+  const slope = sxy/sxx, icpt = my - slope*mx;
+  const r2 = syy===0 ? 0 : (sxy*sxy)/(sxx*syy);
+  return {slope, icpt, r2};
+}
+const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
+const fmt = (v,d=2) => (v>=0?'+':'') + v.toFixed(d);
+
+async function investigate(){
+  const [param, unit, label] = $('param').value.split('|');
+  let lat, lon, placeName;
+  if($('place').value === 'custom'){
+    const parts = $('coords').value.split(',').map(s=>parseFloat(s.trim()));
+    if(parts.length!==2 || parts.some(isNaN) || Math.abs(parts[0])>90 || Math.abs(parts[1])>180){
+      $('status').textContent = 'Please enter coordinates like: -21.17, 27.51';
+      return;
+    }
+    [lat, lon] = parts; placeName = `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+  } else {
+    [lat, lon] = $('place').value.split(',').map(Number);
+    placeName = $('place').selectedOptions[0].textContent;
+  }
+  const endYear = new Date().getFullYear() - 1;
+  const url = `https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=${param}&community=AG&longitude=${lon}&latitude=${lat}&start=1990&end=${endYear}&format=JSON`;
+  $('go').disabled = true;
+  $('status').textContent = '🛰️ Asking NASA POWER for the data…';
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('NASA POWER returned status ' + res.status);
+    const json = await res.json();
+    const data = json.properties.parameter[param];
+    analyse(data, {param, unit, label, placeName, endYear});
+    $('status').textContent = '';
+  }catch(e){
+    $('status').textContent = '⚠️ Could not load data: ' + e.message + '. Check your connection and try again.';
+  }finally{
+    $('go').disabled = false;
+  }
+}
+
+function analyse(data, m){
+  // annual means (key YYYY13); fall back to averaging months
+  const years = [], vals = [];
+  for(let y=1990; y<=m.endYear; y++){
+    let v = data[`${y}13`];
+    if(v===undefined || v<-900){
+      const months = [];
+      for(let k=1;k<=12;k++){ const mv = data[`${y}${String(k).padStart(2,'0')}`]; if(mv!==undefined && mv>-900) months.push(mv); }
+      v = months.length>=10 ? mean(months) : null;
+    }
+    if(v!==null){ years.push(y); vals.push(v); }
+  }
+  if(years.length<10){ $('status').textContent='Not enough valid data for this place/variable.'; return; }
+
+  const {slope, icpt, r2} = linreg(years, vals);
+  const perDecade = slope*10;
+  const first = mean(vals.slice(0,10)), last = mean(vals.slice(-10));
+  const change = last-first;
+  const hotIdx = vals.indexOf(Math.max(...vals)), coolIdx = vals.indexOf(Math.min(...vals));
+  const pct = first!==0 ? (change/Math.abs(first))*100 : 0;
+  const strong = r2 > 0.25;
+  const dir = perDecade>0 ? 'rising' : 'falling';
+  const cls = (m.param==='T2M' ? (perDecade>0?'warm':'cool') : '');
+
+  $('results').style.display='block';
+  $('verdict').innerHTML = `<b>${m.label} in ${m.placeName} is <span class="${cls}">${dir}</span></b> by about <b>${fmt(perDecade)} ${m.unit} per decade</b> ` +
+    `(${years[0]}–${years[years.length-1]}). ` + (strong ? 'The trend is fairly consistent from year to year.' : 'But year-to-year swings are large, so treat this trend with caution.');
+
+  $('stats').innerHTML = [
+    ['Trend', `${fmt(perDecade)} ${m.unit}/decade`, 'Linear fit, annual means'],
+    ['First decade avg', `${first.toFixed(2)} ${m.unit}`, `${years[0]}–${years[9]}`],
+    ['Latest decade avg', `${last.toFixed(2)} ${m.unit}`, `${years[years.length-10]}–${years[years.length-1]}`],
+    ['Change', `${fmt(change)} ${m.unit}`, `${fmt(pct,1)}% vs first decade`],
+    ['Fit strength (R²)', r2.toFixed(2), r2>0.5?'strong':r2>0.25?'moderate':'weak']
+  ].map(([a,b,c])=>`<div class="stat"><small>${a}</small><b>${b}</b><small>${c}</small></div>`).join('');
+
+  $('clues').innerHTML = `
+    <li>Highest year: <b>${years[hotIdx]}</b> (${vals[hotIdx].toFixed(2)} ${m.unit}).</li>
+    <li>Lowest year: <b>${years[coolIdx]}</b> (${vals[coolIdx].toFixed(2)} ${m.unit}).</li>
+    <li>Spread between best and worst year: ${(vals[hotIdx]-vals[coolIdx]).toFixed(2)} ${m.unit}; the decade-to-decade change is ${Math.abs(change)>(vals[hotIdx]-vals[coolIdx])/2?'large':'small'} compared with that spread.</li>
+    ${m.param==='T2M' ? `<li>${perDecade>0?'Warmer':'Cooler'} conditions affect crop heat stress, water demand and energy use for communities here.</li>` : ''}
+    ${m.param==='PRECTOTCORR' ? `<li>Rainfall is highly variable; for farmers and water planners, drought and flood years matter as much as the average.</li>` : ''}
+    ${m.param==='ALLSKY_SFC_SW_DWN' ? `<li>More sunlight means more solar energy potential, but it also means more evaporation from soil and dams.</li>` : ''}
+  `;
+
+  if(chart) chart.destroy();
+  chart = new Chart($('chart'), {
+    type:'line',
+    data:{labels:years, datasets:[
+      {label:`${m.label} (annual mean, ${m.unit})`, data:vals, borderColor:'#4dd0e1', backgroundColor:'#4dd0e1', tension:.25, pointRadius:3},
+      {label:'Trend line', data:years.map(y=>icpt+slope*y), borderColor:'#ff8a65', borderDash:[6,5], pointRadius:0}
+    ]},
+    options:{responsive:true, plugins:{legend:{labels:{color:'#e8ecf8'}}},
+      scales:{x:{ticks:{color:'#9aa6c9'},grid:{color:'#232b52'}}, y:{ticks:{color:'#9aa6c9'},grid:{color:'#232b52'}, title:{display:true,text:m.unit,color:'#9aa6c9'}}}}
+  });
+
+  // seasonal change: last 10y minus first 10y per month
+  const names=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const diffs=[];
+  for(let k=1;k<=12;k++){
+    const get = ys => ys.map(y=>data[`${y}${String(k).padStart(2,'0')}`]).filter(v=>v!==undefined && v>-900);
+    const f = get(years.slice(0,10)), l = get(years.slice(-10));
+    diffs.push(f.length && l.length ? mean(l)-mean(f) : 0);
+  }
+  let bi=0; diffs.forEach((d,i)=>{ if(Math.abs(d)>Math.abs(diffs[bi])) bi=i; });
+  if(seasonChart) seasonChart.destroy();
+  seasonChart = new Chart($('seasonChart'), {
+    type:'bar',
+    data:{labels:names, datasets:[{label:`Change in monthly mean (latest decade − first decade, ${m.unit})`, data:diffs,
+      backgroundColor:diffs.map(d=>d>=0?'#ff8a65':'#64b5f6')}]},
+    options:{responsive:true, plugins:{legend:{labels:{color:'#e8ecf8'}}},
+      scales:{x:{ticks:{color:'#9aa6c9'},grid:{color:'#232b52'}}, y:{ticks:{color:'#9aa6c9'},grid:{color:'#232b52'}}}}
+  });
+  $('seasonNote').textContent = `Biggest shift: ${names[bi]} (${fmt(diffs[bi])} ${m.unit}).`;
+  $('results').scrollIntoView({behavior:'smooth'});
+}
+</script>
+</body>
+</html>
